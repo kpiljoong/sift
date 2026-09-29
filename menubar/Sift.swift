@@ -709,6 +709,8 @@ final class Model: ObservableObject {
         Lang.shared.current = language
         setConfig("language", language.rawValue)
         SettingsWindow.shared.retitle()
+        // core writes the status line; a config change makes it check (and rewrite it) on the next tick, so tick now
+        Core.shared.tick()
     }
 
     func setConfig(_ key: String, _ value: Any) {
