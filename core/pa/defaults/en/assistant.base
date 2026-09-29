@@ -1,0 +1,54 @@
+filters:
+  or:
+    - source == "assistant"
+    - file.hasTag("assistant/review")
+properties:
+  note.confidence:
+    displayName: Confidence
+  note.type:
+    displayName: Type
+  note.project:
+    displayName: Project
+  note.date:
+    displayName: Date
+views:
+  - type: table
+    name: Needs review (new notes)
+    filters:
+      and:
+        - source == "assistant"
+        - confidence < 0.7
+    order:
+      - file.name
+      - confidence
+      - type
+      - project
+      - date
+      - file.folder
+    sort:
+      - property: confidence
+        direction: ASC
+  - type: table
+    name: Needs review (appended to existing notes)
+    filters:
+      and:
+        - file.hasTag("assistant/review")
+    order:
+      - file.name
+      - file.folder
+      - file.mtime
+  - type: table
+    name: Notes created by the assistant
+    filters:
+      and:
+        - source == "assistant"
+    order:
+      - file.name
+      - date
+      - type
+      - project
+      - confidence
+      - file.folder
+    sort:
+      - property: date
+        direction: DESC

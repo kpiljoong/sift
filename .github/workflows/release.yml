@@ -1,0 +1,57 @@
+name: Release
+
+# Push a tag like v0.1.0 to test, build the universal app, and publish a GitHub
+# release with Sift-<version>.zip and the signed in-app update files
+# (sift-update.json/.sig, sift-core-<v>.zip, sift-app-<v>.zip). "Run workflow" (manual) builds
+# the same zip as a downloadable artifact without creating a release.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Check the tag matches VERSION
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          [ "v$(cat VERSION)" = "$GITHUB_REF_NAME" ] || { echo "Tag $GITHUB_REF_NAME does not match VERSION $(cat VERSION)"; exit 1; }
+
+      - name: Test core
+        working-directory: core
+        run: python3 -m unittest discover -s tests -v
+
+      - name: Build the release zip and the signed update
+        env:
+          SIFT_UPDATE_KEY: ${{ secrets.SIFT_UPDATE_KEY }}
+        run: |
+          ./scripts/package.sh
+          if [ ! -f dist/sift-update.sig ]; then
+            echo "::warning::SIFT_UPDATE_KEY is not set, so this release has no in-app update."
+          fi
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: Sift
+          path: |
+            dist/*.zip
+            dist/sift-update.*
+          if-no-files-found: error
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" dist/*.zip dist/sift-update.* --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" dist/*.zip dist/sift-update.* \
+              --title "Sift ${GITHUB_REF_NAME#v}" --generate-notes
+          fi

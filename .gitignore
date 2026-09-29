@@ -1,0 +1,13 @@
+# build output
+menubar/build/
+dist/
+__pycache__/
+*.pyc
+
+# OS noise (._* comes from exFAT/network volumes)
+.DS_Store
+._*
+
+# local, not published
+/CLAUDE.md
+/docs/STATUS.md

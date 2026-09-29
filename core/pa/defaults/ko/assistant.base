@@ -1,0 +1,54 @@
+filters:
+  or:
+    - source == "assistant"
+    - file.hasTag("assistant/review")
+properties:
+  note.confidence:
+    displayName: Confidence
+  note.type:
+    displayName: Type
+  note.project:
+    displayName: Project
+  note.date:
+    displayName: Date
+views:
+  - type: table
+    name: 확인 필요 (새 문서)
+    filters:
+      and:
+        - source == "assistant"
+        - confidence < 0.7
+    order:
+      - file.name
+      - confidence
+      - type
+      - project
+      - date
+      - file.folder
+    sort:
+      - property: confidence
+        direction: ASC
+  - type: table
+    name: 확인 필요 (기존 문서에 추가된 내용)
+    filters:
+      and:
+        - file.hasTag("assistant/review")
+    order:
+      - file.name
+      - file.folder
+      - file.mtime
+  - type: table
+    name: assistant가 만든 문서
+    filters:
+      and:
+        - source == "assistant"
+    order:
+      - file.name
+      - date
+      - type
+      - project
+      - confidence
+      - file.folder
+    sort:
+      - property: date
+        direction: DESC
