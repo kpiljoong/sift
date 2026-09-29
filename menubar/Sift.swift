@@ -1880,7 +1880,14 @@ final class QuickNoteState: ObservableObject {
     @Published var text: String { didSet { saveDraft() } }
     @Published var request: String { didSet { saveDraft() } }
     /// Meeting mode: the panel stays open and the note goes in as one meeting note when finished.
-    @Published var meetingStart: Date? { didSet { saveDraft() } }
+    @Published var meetingStart: Date? {
+        didSet {
+            if meetingStart == nil { meetingFrame = nil }  // a new meeting opens in the usual place
+            saveDraft()
+        }
+    }
+    /// Where the pinned meeting panel was last moved or resized; it reopens there until the meeting ends.
+    var meetingFrame: NSRect? { didSet { saveDraft() } }
     /// "@alpha/" → "@[[01-projects/alpha/]]": short in the editor, exact paths when handed to core.
     var mentions: [String: String] { didSet { saveDraft() } }
 
@@ -1904,6 +1911,9 @@ final class QuickNoteState: ObservableObject {
         request = saved["request"] as? String ?? ""
         meetingStart = (saved["meeting_start"] as? Double).map { Date(timeIntervalSince1970: $0) }
         mentions = saved["mentions"] as? [String: String] ?? [:]
+        if meetingStart != nil, let f = saved["meeting_frame"] as? [Double], f.count == 4 {
+            meetingFrame = NSRect(x: f[0], y: f[1], width: f[2], height: f[3])
+        }
     }
 
     func saveDraft() {
@@ -1913,6 +1923,7 @@ final class QuickNoteState: ObservableObject {
         }
         var draft: [String: Any] = ["text": text, "request": request, "mentions": mentions]
         if let meetingStart { draft["meeting_start"] = meetingStart.timeIntervalSince1970 }
+        if let f = meetingFrame { draft["meeting_frame"] = [f.minX, f.minY, f.width, f.height].map(Double.init) }
         if let data = try? JSONSerialization.data(withJSONObject: draft) {
             try? data.write(to: draftURL, options: .atomic)
         }
@@ -2055,15 +2066,39 @@ final class QuickNote: NSObject, NSWindowDelegate {
         }
         let mouse = NSEvent.mouseLocation
         let screen = NSScreen.screens.first { $0.frame.contains(mouse) } ?? NSScreen.main
-        if let visible = screen?.visibleFrame {
+        if state.meeting, let saved = state.meetingFrame {
+            panel.setFrame(QuickNote.onScreen(saved, min: panel.minSize, fallback: screen), display: false)
+        } else if let visible = screen?.visibleFrame {
             let size = panel.frame.size
             panel.setFrameOrigin(NSPoint(x: visible.midX - size.width / 2, y: visible.minY + visible.height * 0.62))
         }
         panel.makeKeyAndOrderFront(nil)
     }
 
+    /// `frame` moved fully onto the screen it overlaps most (or `fallback` when its display is gone),
+    /// shrunk to fit if that screen is smaller.
+    static func onScreen(_ frame: NSRect, min: NSSize, fallback: NSScreen?) -> NSRect {
+        let overlap = { (s: NSScreen) -> CGFloat in
+            let i = s.visibleFrame.intersection(frame)
+            return i.isNull ? 0 : i.width * i.height
+        }
+        let best = NSScreen.screens.max { overlap($0) < overlap($1) }
+        guard let screen = (best.map(overlap) ?? 0) > 0 ? best : (fallback ?? NSScreen.main) else { return frame }
+        return fit(frame, in: screen.visibleFrame, min: min)
+    }
+
+    static func fit(_ frame: NSRect, in visible: NSRect, min: NSSize) -> NSRect {
+        var f = frame
+        f.size.width = Swift.max(Swift.min(f.width, visible.width), Swift.min(min.width, visible.width))
+        f.size.height = Swift.max(Swift.min(f.height, visible.height), Swift.min(min.height, visible.height))
+        f.origin.x = Swift.min(Swift.max(f.minX, visible.minX), visible.maxX - f.width)
+        f.origin.y = Swift.min(Swift.max(f.minY, visible.minY), visible.maxY - f.height)
+        return f
+    }
+
     func close() {
         state.completion = nil
+        rememberMeetingFrame()  // also covers a panel moved before the meeting started
         panel?.orderOut(nil)
     }
 
@@ -2163,6 +2198,14 @@ final class QuickNote: NSObject, NSWindowDelegate {
         watch = state.$completion.receive(on: DispatchQueue.main).sink { [weak self] in self?.placeList($0) }
         installListKeys()
         return panel
+    }
+
+    func windowDidMove(_ notification: Notification) { rememberMeetingFrame() }
+    func windowDidEndLiveResize(_ notification: Notification) { rememberMeetingFrame() }
+
+    private func rememberMeetingFrame() {
+        guard state.meeting, let panel, panel.isVisible else { return }
+        state.meetingFrame = panel.frame
     }
 
     func windowDidResignKey(_ notification: Notification) {

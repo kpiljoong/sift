@@ -77,6 +77,7 @@ Open the quick note from anywhere with ⌥Space, write as many lines as you like
 - Anything you write in the **Ask the AI** field becomes a `Request: …` line (`요청: …` in Korean) in front of the memo, and the whole memo is sorted as one, following that instruction
   (e.g. "turn this into meeting notes", "add to the alpha note"). Writing a `Request:` or `요청:` line directly in the inbox works the same way.
 - With the **Meeting** toggle on, the window stays open and only saves a draft. ⌘⏎ (end meeting) adds it as one memo under a `## Meeting notes (start–end)` header.
+  While a meeting is on, the window reopens where you last moved or resized it (pulled back on screen if that spot is off screen or on a disconnected display); the next meeting starts in the usual place.
 - The menu bar app drops the memo into `~/Library/Application Support/Sift/quick/`, and the core appends it to the inbox.
 
 Change the check interval, the wait after writing, the last-block hold, the needs-review threshold, and the vault, inbox, and codex locations in the menu bar's **Settings…** window.
