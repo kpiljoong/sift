@@ -2379,18 +2379,28 @@ final class SettingsWindow {
     private var window: NSWindow?
 
     func show(_ model: Model) {
+        let opening = window?.isVisible != true
         if window == nil {
             let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 460, height: 420),
-                             styleMask: [.titled, .closable], backing: .buffered, defer: false)
+                             styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
             w.isReleasedWhenClosed = false
-            let host = NSHostingView(rootView: SettingsView(model: model))
+            let host = NSHostingView(rootView: ScrollView { SettingsView(model: model) })
+            host.sizingOptions = []  // the window keeps the size set below; the content scrolls
             w.contentView = host
-            w.setContentSize(host.fittingSize)
-            w.center()
             NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: w, queue: .main) { _ in
                 Shortcuts.shared.cancelRecording()
             }
             window = w
+        }
+        if opening, let window {
+            // as tall as the settings, but no taller than the screen (small displays scroll)
+            let full = NSHostingView(rootView: SettingsView(model: model)).fittingSize.height
+            let screen = (NSScreen.main ?? window.screen)?.visibleFrame.height ?? full
+            let height = min(full, screen - 40)
+            window.contentMinSize = NSSize(width: 460, height: min(300, height))
+            window.contentMaxSize = NSSize(width: 460, height: full + 40)
+            window.setContentSize(NSSize(width: 460, height: height))
+            window.center()
         }
         window?.title = L("Sift Settings", "Sift 설정")
         NSApp.activate(ignoringOtherApps: true)
