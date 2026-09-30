@@ -2043,6 +2043,7 @@ final class QuickNote: NSObject, NSWindowDelegate {
     private var list: ListPanel?
     private var watch: AnyCancellable?
     private var keys: Any?
+    private var meetingWatch: AnyCancellable?
 
     func toggle(_ model: Model) {
         if let panel, panel.isVisible { close() } else { show(model) }
@@ -2066,7 +2067,9 @@ final class QuickNote: NSObject, NSWindowDelegate {
         }
         let mouse = NSEvent.mouseLocation
         let screen = NSScreen.screens.first { $0.frame.contains(mouse) } ?? NSScreen.main
-        if state.meeting, let saved = state.meetingFrame {
+        if panel.isVisible {
+            // already open (a pinned meeting): leave it where the user put it
+        } else if state.meeting, let saved = state.meetingFrame {
             panel.setFrame(QuickNote.onScreen(saved, min: panel.minSize, fallback: screen), display: false)
         } else if let visible = screen?.visibleFrame {
             let size = panel.frame.size
@@ -2196,6 +2199,8 @@ final class QuickNote: NSObject, NSWindowDelegate {
         }
         panel.delegate = self
         watch = state.$completion.receive(on: DispatchQueue.main).sink { [weak self] in self?.placeList($0) }
+        // a meeting remembers the spot it started in, even if the panel is never moved afterwards
+        meetingWatch = state.$meetingStart.receive(on: DispatchQueue.main).sink { [weak self] _ in self?.rememberMeetingFrame() }
         installListKeys()
         return panel
     }
