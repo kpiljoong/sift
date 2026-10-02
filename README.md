@@ -73,7 +73,8 @@ Open the quick note from anywhere with ⌥Space, write as many lines as you like
   Typing `/`, as in `@01-projects/`, lists everything inside that folder; ⇥ on a folder opens it. A chosen target shows up short, like `@alpha/`,
   and goes into the inbox as an exact path, like `@[[01-projects/alpha/]]`. Point at a note and the memo goes into that note; point at a folder and it's filed inside that folder.
   You can also write `@file-name` (or `@folder-name/` for a folder) directly in the inbox. The list comes from the core's index, so `.assistantignore` paths never appear.
-- Esc or clicking elsewhere closes it; what you were writing stays as a draft.
+- Esc or clicking elsewhere closes it; what you were writing stays as a draft, and reopening puts the caret back where you left off.
+- Text size: the −/+ buttons at the bottom, ⌘+ / ⌘- / ⌘0, or a trackpad pinch. Window opacity (40–100%): the ◐ menu at the top, or ⌘[ / ⌘]. Both are remembered.
 - Anything you write in the **Ask the AI** field becomes a `Request: …` line (`요청: …` in Korean) in front of the memo, and the whole memo is sorted as one, following that instruction
   (e.g. "turn this into meeting notes", "add to the alpha note"). Writing a `Request:` or `요청:` line directly in the inbox works the same way.
 - With the **Meeting** toggle on, the window stays open and only saves a draft. ⌘⏎ (end meeting) adds it as one memo under a `## Meeting notes (start–end)` header.

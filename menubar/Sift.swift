@@ -1764,11 +1764,11 @@ struct NoteEditor: NSViewRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator(state: state) }
 
     func makeNSView(context: Context) -> NSScrollView {
+        let saved = state.cursor
         let scroll = NSTextView.scrollableTextView()
         scroll.drawsBackground = false
         let text = scroll.documentView as! NSTextView
-        text.delegate = context.coordinator
-        text.font = .systemFont(ofSize: 14)
+        text.font = .systemFont(ofSize: state.fontSize)
         text.textColor = .labelColor
         text.drawsBackground = false
         text.isRichText = false
@@ -1778,19 +1778,27 @@ struct NoteEditor: NSViewRepresentable {
         text.isAutomaticTextReplacementEnabled = false
         text.textContainerInset = .zero
         text.string = state.text
+        text.delegate = context.coordinator  // after the text, so loading it doesn't overwrite the saved caret
         state.editor = text
         DispatchQueue.main.async {
-            // once laid out: caret at the end of the draft, scrolled into view, to keep writing
+            // once laid out: back where the user was writing (the end the first time), scrolled into view
             text.window?.makeFirstResponder(text)
-            let end = NSRange(location: (text.string as NSString).length, length: 0)
-            text.setSelectedRange(end)
-            text.scrollRangeToVisible(end)
+            let length = (text.string as NSString).length
+            var caret = saved ?? NSRange(location: length, length: 0)
+            if NSMaxRange(caret) > length { caret = NSRange(location: length, length: 0) }
+            text.setSelectedRange(caret)
+            text.scrollRangeToVisible(caret)
         }
         return scroll
     }
 
     func updateNSView(_ scroll: NSScrollView, context: Context) {
-        guard let text = scroll.documentView as? NSTextView, !text.hasMarkedText(), text.string != state.text else { return }
+        guard let text = scroll.documentView as? NSTextView else { return }
+        if text.font?.pointSize != state.fontSize {
+            text.font = .systemFont(ofSize: state.fontSize)
+            text.scrollRangeToVisible(text.selectedRange())
+        }
+        guard !text.hasMarkedText(), text.string != state.text else { return }
         text.string = state.text
     }
 
@@ -1805,6 +1813,7 @@ struct NoteEditor: NSViewRepresentable {
         }
 
         func textViewDidChangeSelection(_ notification: Notification) {
+            if let text = notification.object as? NSTextView { state.cursor = text.selectedRange() }
             state.updateCompletion()
         }
     }
@@ -1895,6 +1904,42 @@ final class QuickNoteState: ObservableObject {
     var meetingFrame: NSRect? { didSet { saveDraft() } }
     /// "@alpha/" → "@[[01-projects/alpha/]]": short in the editor, exact paths when handed to core.
     var mentions: [String: String] { didSet { saveDraft() } }
+    /// Where the caret was, so reopening continues there (nil: the end).
+    var cursor: NSRange? { didSet { if cursor != oldValue { saveDraft() } } }
+
+    /// Editor text size: −/+ in the footer, ⌘- ⌘+ ⌘0, or a pinch.
+    static let fontSizes: [CGFloat] = [11, 12, 13, 14, 16, 18, 20, 22, 24, 28]
+    static let defaultFontSize: CGFloat = 14
+    @Published var fontSize: CGFloat = {
+        let saved = CGFloat(UserDefaults.standard.double(forKey: "quickNote.fontSize"))
+        return fontSizes.contains(saved) ? saved : defaultFontSize
+    }() {
+        didSet { UserDefaults.standard.set(Double(fontSize), forKey: "quickNote.fontSize") }
+    }
+
+    /// Panel opacity in 10% steps; 40% keeps the text readable.
+    static let opacities: [Double] = [0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
+    @Published var opacity: Double = {
+        let saved = UserDefaults.standard.double(forKey: "quickNote.opacity")
+        return opacities.first { abs($0 - saved) < 0.001 } ?? 1.0
+    }() {
+        didSet { UserDefaults.standard.set(opacity, forKey: "quickNote.opacity") }
+    }
+
+    /// One opacity step more opaque (1) or more transparent (-1).
+    func fade(_ step: Int) {
+        let steps = QuickNoteState.opacities
+        let index = steps.firstIndex { abs($0 - opacity) < 0.001 } ?? steps.count - 1
+        opacity = steps[min(max(index + step, 0), steps.count - 1)]
+    }
+
+    /// One size step bigger (1) or smaller (-1); 0 goes back to the default.
+    func zoom(_ step: Int) {
+        let sizes = QuickNoteState.fontSizes
+        guard step != 0 else { return fontSize = QuickNoteState.defaultFontSize }
+        let index = sizes.firstIndex(of: fontSize) ?? sizes.firstIndex(of: QuickNoteState.defaultFontSize)!
+        fontSize = sizes[min(max(index + step, 0), sizes.count - 1)]
+    }
 
     struct Completion {
         var range: NSRange  // "@query" before the caret
@@ -1916,6 +1961,7 @@ final class QuickNoteState: ObservableObject {
         request = saved["request"] as? String ?? ""
         meetingStart = (saved["meeting_start"] as? Double).map { Date(timeIntervalSince1970: $0) }
         mentions = saved["mentions"] as? [String: String] ?? [:]
+        if let c = saved["cursor"] as? [Int], c.count == 2 { cursor = NSRange(location: c[0], length: c[1]) }
         if meetingStart != nil, let f = saved["meeting_frame"] as? [Double], f.count == 4 {
             meetingFrame = NSRect(x: f[0], y: f[1], width: f[2], height: f[3])
         }
@@ -1927,6 +1973,7 @@ final class QuickNoteState: ObservableObject {
             return
         }
         var draft: [String: Any] = ["text": text, "request": request, "mentions": mentions]
+        if let cursor { draft["cursor"] = [cursor.location, cursor.length] }
         if let meetingStart { draft["meeting_start"] = meetingStart.timeIntervalSince1970 }
         if let f = meetingFrame { draft["meeting_frame"] = [f.minX, f.minY, f.width, f.height].map(Double.init) }
         if let data = try? JSONSerialization.data(withJSONObject: draft) {
@@ -2049,6 +2096,10 @@ final class QuickNote: NSObject, NSWindowDelegate {
     private var watch: AnyCancellable?
     private var keys: Any?
     private var meetingWatch: AnyCancellable?
+    private var zoomKeys: Any?
+    private var opacityWatch: AnyCancellable?
+    private var pinch: Any?
+    private var pinched: CGFloat = 0
 
     func toggle(_ model: Model) {
         if let panel, panel.isVisible { close() } else { show(model) }
@@ -2142,6 +2193,30 @@ final class QuickNote: NSObject, NSWindowDelegate {
 
     /// ↑↓ ⏎ ⇥ esc belong to the list while it's open (before the IME and the panel's buttons see them).
     private func installListKeys() {
+        // text size: ⌘+ (⌘= or ⌘⇧=), ⌘-, ⌘0 and the keypad; a pinch on the trackpad
+        zoomKeys = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self, event.window === self.panel else { return event }
+            let mods = event.modifierFlags.intersection([.command, .option, .control, .shift])
+            guard mods == .command || mods == [.command, .shift] else { return event }
+            switch Int(event.keyCode) {
+            case kVK_ANSI_Equal, kVK_ANSI_KeypadPlus: self.state.zoom(1)
+            case kVK_ANSI_Minus, kVK_ANSI_KeypadMinus: self.state.zoom(-1)
+            case kVK_ANSI_0, kVK_ANSI_Keypad0: self.state.zoom(0)
+            case kVK_ANSI_LeftBracket where mods == .command: self.state.fade(-1)  // ⌘[ more transparent
+            case kVK_ANSI_RightBracket where mods == .command: self.state.fade(1)  // ⌘] more opaque
+            default: return event
+            }
+            return nil
+        }
+        pinch = NSEvent.addLocalMonitorForEvents(matching: .magnify) { [weak self] event in
+            guard let self, event.window === self.panel else { return event }
+            self.pinched += event.magnification
+            if abs(self.pinched) >= 0.15 {
+                self.state.zoom(self.pinched > 0 ? 1 : -1)
+                self.pinched = 0
+            }
+            return nil
+        }
         keys = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self, self.state.completion != nil, event.window === self.panel else { return event }
             let mods = event.modifierFlags.intersection([.command, .option, .control, .shift])
@@ -2182,6 +2257,7 @@ final class QuickNote: NSObject, NSWindowDelegate {
             state.request = ""
             state.meetingStart = nil
             state.mentions = [:]
+            state.cursor = nil
             close()
             model.notifyQueued(typed)
         }
@@ -2206,6 +2282,7 @@ final class QuickNote: NSObject, NSWindowDelegate {
         watch = state.$completion.receive(on: DispatchQueue.main).sink { [weak self] in self?.placeList($0) }
         // a meeting remembers the spot it started in, even if the panel is never moved afterwards
         meetingWatch = state.$meetingStart.receive(on: DispatchQueue.main).sink { [weak self] _ in self?.rememberMeetingFrame() }
+        opacityWatch = state.$opacity.sink { [weak panel] in panel?.alphaValue = CGFloat($0) }
         installListKeys()
         return panel
     }
@@ -2248,6 +2325,25 @@ struct QuickNoteView: View {
                         .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                 }
                 Spacer()
+                Menu {
+                    ForEach(QuickNoteState.opacities.reversed(), id: \.self) { value in
+                        Button {
+                            state.opacity = value
+                        } label: {
+                            Text("\(Int((value * 100).rounded()))%" + (abs(value - state.opacity) < 0.001 ? " ✓" : ""))
+                        }
+                    }
+                    Divider()
+                    Text(L("⌘[ more transparent · ⌘] more opaque", "⌘[ 더 투명하게 · ⌘] 더 불투명하게"))
+                } label: {
+                    Label(state.opacity < 1 ? "\(Int((state.opacity * 100).rounded()))%" : "",
+                          systemImage: "circle.lefthalf.filled")
+                        .font(.caption.weight(.medium))
+                        .labelStyle(.titleAndIcon)
+                }
+                .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+                .foregroundStyle(.secondary)
+                .help(L("Window opacity (⌘[ ⌘])", "창 투명도 (⌘[ ⌘])"))
                 Button(action: state.toggleMeeting) {
                     Label(state.meeting ? L("In meeting", "미팅 중") : L("Meeting", "미팅"), systemImage: state.meeting ? "pin.fill" : "pin")
                         .font(.caption.weight(.medium))
@@ -2289,6 +2385,20 @@ struct QuickNoteView: View {
                 Text(state.meeting ? L("esc hides · \(Shortcuts.shared.label(.quickNote)) brings it back", "esc 숨기기 · \(Shortcuts.shared.label(.quickNote))로 다시")
                      : L("esc closes · the draft stays", "esc 닫기 · 초안 유지")).font(.caption).foregroundStyle(.tertiary)
                 Spacer()
+                HStack(spacing: 2) {
+                    Button { state.zoom(-1) } label: { Image(systemName: "minus") }
+                        .help(L("Smaller text (⌘-)", "글자 작게 (⌘-)"))
+                        .disabled(state.fontSize <= QuickNoteState.fontSizes.first!)
+                    Button { state.zoom(0) } label: {
+                        Text("\(Int((state.fontSize / QuickNoteState.defaultFontSize * 100).rounded()))%")
+                            .font(.caption.monospacedDigit()).frame(minWidth: 34)
+                    }
+                    .help(L("Default size (⌘0)", "기본 크기 (⌘0)"))
+                    Button { state.zoom(1) } label: { Image(systemName: "plus") }
+                        .help(L("Larger text (⌘+)", "글자 크게 (⌘+)"))
+                        .disabled(state.fontSize >= QuickNoteState.fontSizes.last!)
+                }
+                .buttonStyle(.borderless).foregroundStyle(.secondary).controlSize(.small)
                 Button(state.meeting ? L("Hide", "숨기기") : L("Close", "닫기"), action: cancel).keyboardShortcut(.cancelAction).controlSize(.small)
                 Button(state.meeting ? L("End meeting · add to inbox", "미팅 끝 · inbox에 넣기") : L("Add to inbox", "inbox에 넣기"), action: submit)
                     .keyboardShortcut(.return, modifiers: .command)
