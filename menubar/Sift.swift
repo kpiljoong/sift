@@ -1778,9 +1778,14 @@ struct NoteEditor: NSViewRepresentable {
         text.isAutomaticTextReplacementEnabled = false
         text.textContainerInset = .zero
         text.string = state.text
-        text.setSelectedRange(NSRange(location: (state.text as NSString).length, length: 0))
         state.editor = text
-        DispatchQueue.main.async { text.window?.makeFirstResponder(text) }
+        DispatchQueue.main.async {
+            // once laid out: caret at the end of the draft, scrolled into view, to keep writing
+            text.window?.makeFirstResponder(text)
+            let end = NSRange(location: (text.string as NSString).length, length: 0)
+            text.setSelectedRange(end)
+            text.scrollRangeToVisible(end)
+        }
         return scroll
     }
 
