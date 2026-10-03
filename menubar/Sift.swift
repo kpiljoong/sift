@@ -537,6 +537,8 @@ final class Model: ObservableObject {
     @Published var inboxBlocks = 0
     @Published var today: [String: Int] = [:]
     @Published var recent: [RecentItem] = []
+    @Published var review: [RecentItem] = []  // waiting for the user's check (core drops ones settled in the vault)
+    @Published var reviewDismissed = Set(UserDefaults.standard.stringArray(forKey: "review.dismissed") ?? [])
     @Published var dryRun = true
     @Published var paused = false
     @Published var vault = ""
@@ -631,6 +633,7 @@ final class Model: ObservableObject {
             if let raw = s["last_run_at"] as? String {
                 lastRun = ISO8601DateFormatter().date(from: raw)
             }
+            review = ((s["review"] as? [[String: Any]]) ?? []).map(Model.item)
             let items: [RecentItem] = ((s["recent"] as? [[String: Any]]) ?? []).map {
                 RecentItem(
                     id: "\($0["id"] ?? "")-\($0["time"] ?? "")",
@@ -667,6 +670,32 @@ final class Model: ObservableObject {
                 assistantDir = (vault as NSString).appendingPathComponent(a)
             }
         }
+    }
+
+    static func item(_ e: [String: Any]) -> RecentItem {
+        RecentItem(
+            id: "\(e["id"] ?? "")-\(e["time"] ?? "")",
+            time: e["time"] as? String ?? "",
+            kind: e["kind"] as? String ?? "",
+            title: e["title"] as? String ?? "",
+            targets: e["targets"] as? [String] ?? [],
+            confidence: (e["confidence"] as? NSNumber)?.doubleValue,
+            entry: e
+        )
+    }
+
+    var pendingReview: [RecentItem] { review.filter { !reviewDismissed.contains($0.id) } }
+
+    /// ✓ in the list: the user looked at it. Kept on this Mac only; the vault is not touched.
+    func dismissReview(_ item: RecentItem) {
+        reviewDismissed.insert(item.id)
+        let live = Set(review.map(\.id))  // forget ids core no longer lists
+        UserDefaults.standard.set(Array(reviewDismissed.filter { live.contains($0) }), forKey: "review.dismissed")
+    }
+
+    /// Open the review note when there is one: it says why the item needs a look.
+    func openReview(_ item: RecentItem) {
+        if let target = item.targets.first(where: { $0.contains("/review/") }) ?? item.targets.first { openNote(target) }
     }
 
     // MARK: processed notice
@@ -1190,6 +1219,7 @@ struct RecentRow: View {
     let item: RecentItem
     let open: () -> Void
     var resort: (() -> Void)?
+    var dismiss: (() -> Void)?
     @State private var hover = false
 
     var body: some View {
@@ -1213,6 +1243,13 @@ struct RecentRow: View {
                             }
                             .buttonStyle(.plain).foregroundStyle(.secondary)
                             .help(L("Re-sort…", "다시 정리…"))
+                        }
+                        if hover, let dismiss {
+                            Button(action: dismiss) {
+                                Image(systemName: "checkmark.circle").font(.system(size: 13))
+                            }
+                            .buttonStyle(.plain).foregroundStyle(.secondary)
+                            .help(L("Checked: hide from this list", "확인함: 목록에서 숨기기"))
                         }
                         Text(shortTime(item.time)).font(.caption2.monospacedDigit()).foregroundStyle(.tertiary)
                     }
@@ -1244,6 +1281,7 @@ struct RecentRow: View {
         .contextMenu {
             Button(L("Open", "열기"), action: open)
             if let resort { Button(L("Re-sort…", "다시 정리…"), action: resort) }
+            if let dismiss { Button(L("Mark as Checked", "확인함"), action: dismiss) }
         }
     }
 
@@ -2893,6 +2931,7 @@ struct Panel: View {
                     .background(Color.red.opacity(0.1), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
             }
             today
+            reviewList
             recent
             controls
             links
@@ -2949,6 +2988,27 @@ struct Panel: View {
                     Stat(symbol: "calendar", label: L("calendar", "일정 후보"), value: model.today["calendar"] ?? 0, color: .red)
                     Stat(symbol: "exclamationmark.bubble", label: "review", value: model.today["review"] ?? 0, color: .orange)
                 }
+            }
+        }
+    }
+
+    @ViewBuilder var reviewList: some View {
+        let items = model.pendingReview
+        if !items.isEmpty {
+            VStack(alignment: .leading, spacing: 6) {
+                SectionTitle(text: L("Needs Review · \(items.count)", "확인 필요 · \(items.count)"),
+                             trailing: L("✓ when checked", "확인하면 ✓"))
+                ScrollView {
+                    VStack(spacing: 1) {
+                        ForEach(items) { item in
+                            RecentRow(item: item, open: { model.openReview(item) },
+                                      resort: { model.resort(item) }, dismiss: { model.dismissReview(item) })
+                        }
+                    }
+                    .padding(3)
+                }
+                .frame(height: min(CGFloat(items.count) * 52 + 6, 160))
+                .background(Color.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
             }
         }
     }

@@ -13,7 +13,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from . import processor, vault
+from . import processor, review, vault
 from .config import Config, ConfigError, config_path, load_config, support_dir
 from .i18n import set_language, tr
 from .inbox import Block, content_hash, remove_blocks, split_blocks
@@ -157,17 +157,26 @@ class Run:
                 desc = self.apply_action(action, item, link, targets)
                 lines.append(f"  - {desc}")
             if not self.cfg.dry_run:  # history drives continuation; only real writes count
-                history.append(
-                    {
-                        "id": ids[0],
-                        "ids": ids,  # re-sort finds every block of the item in the archive
-                        "time": self.stamp,
-                        "kind": item.get("kind", "other"),
-                        "title": item.get("title", ""),
-                        "confidence": item["confidence"],
-                        "targets": targets,
-                    }
-                )
+                entry = {
+                    "id": ids[0],
+                    "ids": ids,  # re-sort finds every block of the item in the archive
+                    "time": self.stamp,
+                    "kind": item.get("kind", "other"),
+                    "title": item.get("title", ""),
+                    "confidence": item["confidence"],
+                    "targets": targets,
+                }
+                history.append(entry)
+                if self.low(item) or item.get("_new_folder") or any(review.in_review_dir(self.cfg, t) for t in targets):
+                    review.track(self.state, entry)
+                for h in {content_hash(by_id[i].text) for i in ids}:
+                    old = self.state["resorts"].pop(h, None)
+                    if old:  # the re-sort replaced this entry: settle it, point its todos here
+                        review.settle(self.state, old)
+                        moved = review.mark_moved(self.cfg, old, targets)
+                        if moved:
+                            self.log(tr(f"Marked {moved} earlier line(s) of \"{old.get('title', '')}\" as moved",
+                                        f"「{old.get('title', '')}」의 이전 항목 {moved}줄에 옮김 표시"))
 
         leftover = [b for b in blocks if b.id not in used]
         if leftover:
@@ -248,6 +257,7 @@ class Run:
                 new_folder = vault.new_project_folder(self.cfg, target)
                 if new_folder:  # a new project folder: allowed, but always shown for review
                     footer += "" if mark else f" #{REVIEW_TAG}"
+                    item["_new_folder"] = True
                 if kind == "create":
                     body = f"{self.frontmatter(item, review=bool(new_folder))}\n\n{content}\n\n{footer}"
                 else:
@@ -448,18 +458,21 @@ def ingest_quick_notes(cfg: Config) -> int:
     files = sorted(f for f in quick_dir().glob("*") if f.suffix in (".md", ".json")) if quick_dir().exists() else []
     if not files:
         return 0
-    parts, grouped = [], []
+    parts, grouped, resorts = [], [], {}
     for f in files:
         raw = f.read_text(encoding="utf-8")
         note = json.loads(raw) if f.suffix == ".json" else {"text": raw}
         text = (note.get("text") or "").strip("\n")
         request = (note.get("request") or "").strip()
-        if isinstance(note.get("resort"), dict) and request:
-            text, request = resort_note(cfg, note["resort"], request)
+        old = note.get("resort") if isinstance(note.get("resort"), dict) and request else None
+        if old:
+            text, request = resort_note(cfg, old, request)
             note["group"] = True
         if request:
             prefix = tr("Request:", "요청:")
             text = f"{prefix} {request}\n{text}" if text.strip() else f"{prefix} {request}"
+        if old and text.strip():
+            resorts[content_hash(split_blocks(text)[0].text)] = old
         if text.strip():
             parts.append(text)
             if request or note.get("group"):
@@ -479,6 +492,7 @@ def ingest_quick_notes(cfg: Config) -> int:
             hashes = [content_hash(b.text) for b in split_blocks(text)]
             if len(hashes) > 1:
                 state["groups"].append(hashes)
+        state["resorts"].update(resorts)
         save_state(state)
     for f in files:
         f.unlink()
@@ -566,6 +580,7 @@ def run_once(force: bool = False, engine=None, cfg: Optional[Config] = None) -> 
         bump(state, "runs")
         if result.get("processed"):
             write_status(last_processed_at=iso(run.t))
+        pending = review.open_items(cfg, state)
         save_state(state)
         write_status(
             state="waiting" if result.get("held") and not result.get("processed") else "idle",
@@ -575,6 +590,7 @@ def run_once(force: bool = False, engine=None, cfg: Optional[Config] = None) -> 
             inbox_blocks=remaining_blocks(cfg, result["blocks"]),
             today=state["stats"].get(run.t.strftime("%Y-%m-%d"), {}),
             recent=list(reversed(state["history"][-10:])),
+            review=pending,
             other_processor=None,
             **base,
         )

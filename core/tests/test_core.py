@@ -424,6 +424,71 @@ class EngineTests(unittest.TestCase):
         self.assertIn("rules/corrections.md", prompt)  # learned rules go to every later run
         self.assertIn(f"할 일 {entry['id']}", self.read("99-assistant/todo.md"))  # the earlier entry stays
 
+    def low_todo_plan(self, prompt, confidence=0.3):
+        plan = self.todo_plan(prompt)
+        for item in plan["items"]:
+            item["confidence"] = confidence
+        return plan
+
+    def sure_todo_plan(self, prompt):
+        return self.low_todo_plan(prompt, 0.9)
+
+    def test_review_list_follows_the_vault(self):
+        self.cfg.last_block_hold_minutes = 0
+        self.write_inbox("애매한 할 일\n\n확실한 할 일\n")
+        ids = []
+
+        def plan(prompt):
+            ids.extend(ids_in(prompt))
+            p = self.todo_plan(prompt)
+            p["items"][0]["confidence"] = 0.3
+            p["items"][1]["confidence"] = 0.9
+            return p
+
+        run_once(engine=FakeEngine(plan), cfg=self.cfg)
+        pending = read_status()["review"]
+        self.assertEqual([e["id"] for e in pending], [ids[0]])
+
+        todo = self.vault / "99-assistant" / "todo.md"
+        todo.write_text(todo.read_text(encoding="utf-8").replace(" #assistant/review", ""), encoding="utf-8")
+        self.write_inbox("다른 메모\n")
+        run_once(engine=FakeEngine(self.sure_todo_plan), cfg=self.cfg)
+        self.assertEqual(read_status()["review"], [])  # the user removed the tag: settled
+
+    def test_resort_marks_earlier_todo_as_moved_and_settles_it(self):
+        import json as _json
+
+        from pa.engine import quick_dir
+
+        self.cfg.last_block_hold_minutes = 0
+        self.write_inbox("alpha 배포 스크립트 점검\n")
+        run_once(engine=FakeEngine(self.low_todo_plan), cfg=self.cfg)
+        entry = load_state()["history"][0]
+        self.assertEqual(len(read_status()["review"]), 1)
+
+        quick_dir().mkdir(exist_ok=True)
+        note = {"text": "", "request": "alpha 프로젝트 문서로", "resort": entry}
+        (quick_dir() / "1.json").write_text(_json.dumps(note, ensure_ascii=False), encoding="utf-8")
+        run_once(engine=FakeEngine(self.create_plan("01-projects/alpha/배포.md")), cfg=self.cfg)
+        todo = self.read("99-assistant/todo.md")
+        line = next(l for l in todo.splitlines() if f"할 일 {entry['id']}" in l)
+        self.assertTrue(line.startswith("- [ ] 할 일"))  # kept, not rewritten
+        self.assertTrue(line.endswith(" ↪ 옮김 [[01-projects/alpha/배포]]"))
+        self.assertEqual(read_status()["review"], [])
+        self.assertEqual(load_state()["resorts"], {})
+
+    def test_review_list_starts_from_history_on_upgrade(self):
+        self.cfg.last_block_hold_minutes = 0
+        self.write_inbox("애매한 할 일\n")
+        run_once(engine=FakeEngine(self.low_todo_plan), cfg=self.cfg)
+        from pa.state import save_state
+        state = load_state()
+        state["review"], state["review_seeded"] = [], False  # as left by 0.6.5
+        save_state(state)
+        self.write_inbox("다른 메모\n")
+        run_once(engine=FakeEngine(self.sure_todo_plan), cfg=self.cfg)
+        self.assertEqual(len(read_status()["review"]), 1)
+
 
 class ProcessorTests(unittest.TestCase):
     """Two Macs syncing one vault: only one of them sorts it."""

@@ -91,6 +91,7 @@ In the Obsidian Tasks plugin format:
 ### 6.1 Write constraints
 - **No deleting.** No modifying existing content.
 - The only exception: **moving** processed blocks from the inbox (`active.md`) to the archive (following rules C and D in 3.2).
+- One narrow addition: when an item is re-sorted, its earlier unchecked todo/calendar lines get a `↪ moved [[...]]` suffix. Nothing on the line is removed or changed.
 - Every operation is logged in `99-assistant/log/YYYY-MM-DD.md` (what, where, from which original).
 
 ### 6.2 Read scope

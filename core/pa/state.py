@@ -17,6 +17,8 @@ EMPTY_STATE: Dict[str, Any] = {
     "ready": [],  # block hashes from quick notes: finished writing, skip rules A/B
     "groups": [],  # lists of block hashes written as one note (e.g. a note with a Request: line)
     "stats": {},  # YYYY-MM-DD -> counters
+    "review": [],  # history entries still waiting for the user's check, newest last
+    "resorts": {},  # first block hash of a re-sort -> the history entry it replaces
 }
 
 
@@ -68,7 +70,7 @@ def reset_for_vault(state: Dict[str, Any], vault: str) -> bool:
     state["vault"] = vault
     if not previous or previous == vault:
         return False
-    for key in ("seen", "pending_removal", "dry_run_seen", "history"):
+    for key in ("seen", "pending_removal", "dry_run_seen", "history", "review", "resorts"):
         state[key] = json.loads(json.dumps(EMPTY_STATE[key]))
     return True
 

@@ -61,11 +61,12 @@ Once installed, Sift uses:
 3. Processed blocks move to `99-assistant/inbox-archive/`, and each result ends with a link to its original.
 4. If you don't like the results, add rules and examples to `99-assistant/rules/*.md`. They apply from the next run.
 5. Items the AI wasn't sure about are gathered in `99-assistant/assistant.base` (a needs-review view) and under the `#assistant/review` tag.
+   The menu bar lists them under **Needs Review**. An item leaves the list when you remove its `#assistant/review` tag in the vault, re-sort it, or click ✓ (✓ only hides it on this Mac).
 6. A note that clearly names a project with no folder yet (e.g. "Tramio launch prep") goes into a new `01-projects/<name>/` folder, and the note is marked for review so you can check it.
    If a folder with the same or a similar name already exists (`margin` vs `Margin`, `agent-notes` vs `agent-note`), that folder is used instead.
 7. If something was filed wrong, hover over it under **Recent** in the menu bar and click ↺ (or right-click > **Re-sort…**), then say how to change it.
    Sift re-sorts the original as instructed and records the correction in `99-assistant/rules/corrections.md`, so later runs follow it.
-   The earlier entry is not deleted; remove it yourself if needed.
+   The earlier entry is not deleted. Its open todos get `↪ moved [[new note]]` at the end of the line, so you can tell which copy to follow.
 
 ### Quick note (⌥Space by default)
 Open the quick note from anywhere with ⌥Space, write as many lines as you like, and press ⌘⏎ to add it to the inbox. Quick notes are sorted right away, with no waiting or holding.
