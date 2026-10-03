@@ -205,6 +205,31 @@ class EngineTests(unittest.TestCase):
         self.assertNotIn("title: ignored", note)
         self.assertNotIn("#assistant/review", note)
 
+    def create_plan(self, path):
+        def plan(prompt):
+            return {"items": [{"block_ids": ids_in(prompt), "kind": "project", "title": "t", "continues": None,
+                               "confidence": 0.9, "properties": {"type": ["project"]},
+                               "actions": [{"type": "create", "path": path, "content": "내용", "reason": "r"}]}]}
+        return plan
+
+    def test_new_project_folder_is_created_and_flagged(self):
+        self.cfg.last_block_hold_minutes = 0
+        self.write_inbox("Tramio 출시 준비\n")
+        run_once(engine=FakeEngine(self.create_plan("01-projects/tramio/출시 준비.md")), cfg=self.cfg)
+        note = self.read("01-projects/tramio/출시 준비.md")
+        self.assertIn("  - assistant/review\n", note)  # frontmatter tag: shows up for review
+        self.assertTrue(note.rstrip().endswith("#assistant/review"))
+        log = next((self.vault / "99-assistant" / "log").glob("*.md")).read_text(encoding="utf-8")
+        self.assertIn("새 폴더 `01-projects/tramio/`", log)
+
+    def test_similar_existing_folder_is_reused(self):
+        self.cfg.last_block_hold_minutes = 0
+        self.write_inbox("alpha 메모\n")
+        run_once(engine=FakeEngine(self.create_plan("01-projects/Alphas/메모.md")), cfg=self.cfg)
+        self.assertTrue((self.vault / "01-projects" / "alpha" / "메모.md").exists())
+        self.assertFalse((self.vault / "01-projects" / "Alphas").exists())
+        self.assertNotIn("#assistant/review", self.read("01-projects/alpha/메모.md"))
+
     def test_low_confidence_is_flagged(self):
         self.cfg.last_block_hold_minutes = 0
         self.write_inbox("애매한 메모\n")
@@ -398,6 +423,85 @@ class EngineTests(unittest.TestCase):
         self.assertIn("바로잡음: alpha 프로젝트 문서로", corrections)
         self.assertIn("rules/corrections.md", prompt)  # learned rules go to every later run
         self.assertIn(f"할 일 {entry['id']}", self.read("99-assistant/todo.md"))  # the earlier entry stays
+
+
+class ProcessorTests(unittest.TestCase):
+    """Two Macs syncing one vault: only one of them sorts it."""
+
+    setUp = EngineTests.setUp
+    write_inbox = EngineTests.write_inbox
+    read = EngineTests.read
+    todo_plan = EngineTests.todo_plan
+
+    def other_marker(self, hours_ago):
+        import json as _json
+        from datetime import timedelta
+
+        from pa.state import iso, now
+
+        (self.vault / "99-assistant" / "sift-processor.json").write_text(_json.dumps(
+            {"id": "someone-else", "name": "MacBook", "at": iso(now() - timedelta(hours=hours_ago))}), encoding="utf-8")
+
+    def marker(self):
+        import json as _json
+
+        return _json.loads(self.read("99-assistant/sift-processor.json"))
+
+    def test_sorting_mac_marks_the_vault(self):
+        from pa.processor import machine_id
+
+        self.write_inbox("치과 전화\n")
+        run_once(engine=FakeEngine(self.todo_plan), cfg=self.cfg)
+        self.assertEqual(self.marker()["id"], machine_id())
+
+    def test_another_mac_sorting_recently_stops_this_one(self):
+        self.other_marker(hours_ago=1)
+        self.write_inbox("치과 전화\n")
+        engine = FakeEngine(self.todo_plan)
+        self.assertEqual(run_once(engine=engine, force=True, cfg=self.cfg)["message"], "blocked")
+        self.assertEqual(engine.calls, [])
+        status = read_status()
+        self.assertEqual((status["state"], status["other_processor"]), ("blocked", "MacBook"))
+        self.assertEqual(self.marker()["id"], "someone-else")
+        self.assertEqual(self.inbox.read_text(encoding="utf-8"), "치과 전화\n")
+
+    def test_stale_marker_is_taken_over(self):
+        from pa.processor import machine_id
+
+        self.other_marker(hours_ago=30)
+        self.write_inbox("치과 전화\n")
+        engine = FakeEngine(self.todo_plan)
+        run_once(engine=engine, force=True, cfg=self.cfg)
+        self.assertEqual(len(engine.calls), 1)
+        self.assertEqual(self.marker()["id"], machine_id())
+
+    def test_sort_on_this_mac_request_takes_over(self):
+        from pa.processor import claim_request, machine_id
+
+        self.other_marker(hours_ago=1)
+        claim_request().touch()
+        self.write_inbox("치과 전화\n")
+        engine = FakeEngine(self.todo_plan)
+        run_once(engine=engine, force=True, cfg=self.cfg)
+        self.assertEqual(len(engine.calls), 1)
+        self.assertEqual(self.marker()["id"], machine_id())
+        self.assertFalse(claim_request().exists())
+        self.assertIsNone(read_status()["other_processor"])
+
+    def test_collect_only_adds_quick_notes_but_never_sorts(self):
+        import json as _json
+
+        from pa.engine import quick_dir
+
+        quick_dir().mkdir(exist_ok=True)
+        (quick_dir() / "1.json").write_text(_json.dumps({"text": "치과 예약"}), encoding="utf-8")
+        self.cfg.collect_only = True
+        engine = FakeEngine(self.todo_plan)
+        self.assertEqual(run_once(engine=engine, force=True, cfg=self.cfg)["message"], "collect_only")
+        self.assertEqual(engine.calls, [])
+        self.assertIn("치과 예약", self.inbox.read_text(encoding="utf-8"))
+        self.assertEqual(read_status()["state"], "collecting")
+        self.assertFalse((self.vault / "99-assistant" / "sift-processor.json").exists())
 
 
 class LanguageTests(unittest.TestCase):

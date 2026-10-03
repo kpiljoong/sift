@@ -11,5 +11,5 @@ This vault uses the PARA structure.
 - Meetings: create `<that folder>/meetings/YYYY-MM-DD <topic>.md`.
 - Ideas: if there's no related project, `03-resources/_inbox/ideas/YYYY-MM-DD <title>.md`.
 - If you're not sure where it goes, send it to review. Don't force a placement.
-- Don't create new folders (projects). If one seems needed, send it to review and give the reason.
+- New project folder: only when the note clearly names a project that has no folder yet (e.g. "Tramio launch prep"), create `01-projects/<project>/` (short, lowercase) and put the note in it. First look for an existing folder with the same or a similar name and use that. If you'd only be guessing the project, send it to review instead.
 - Don't use `/ \ : * ? " < > |` in file names.

@@ -37,6 +37,7 @@ class Config:
     engine: str = "codex"
     codex_path: str = "/opt/homebrew/bin/codex"
     open_with: str = ""  # app used by the menu bar to open notes; empty = macOS default app
+    collect_only: bool = False  # only add quick notes to the inbox; another Mac sorts the (synced) vault
     language: str = "en"  # "en" or "ko": status, vault headings, default rules (earlier configs without it read as "ko")
     codex_model: str = ""  # empty = codex default
     codex_timeout_seconds: int = 600

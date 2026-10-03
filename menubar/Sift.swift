@@ -548,6 +548,8 @@ final class Model: ObservableObject {
     @Published var threshold = 0.7
     @Published var codexPath = ""
     @Published var openWith = ""  // app path; empty = macOS default
+    @Published var collectOnly = false  // this Mac only feeds the inbox; another Mac sorts it
+    @Published var otherProcessor: String?  // the Mac that sorts this vault, when core stood down for it
     @Published var assistantDir = ""
     @Published var flash: String?
     private let bubble = Bubble()
@@ -594,6 +596,8 @@ final class Model: ObservableObject {
         case "processing": return "arrow.triangle.2.circlepath.circle"
         case "waiting": return "hourglass.circle"
         case "error": return "exclamationmark.triangle"
+        case "collecting": return "tray.and.arrow.down"
+        case "blocked": return "macbook.and.iphone"
         default: return dryRun ? "tray.circle" : "tray.full"
         }
     }
@@ -606,6 +610,8 @@ final class Model: ObservableObject {
         case "processing": return L("Processing", "처리 중")
         case "error": return L("Error", "오류")
         case "paused": return L("Paused", "일시정지")
+        case "collecting": return L("Collecting notes only", "메모만 받는 중")
+        case "blocked": return L("Another Mac is sorting", "다른 Mac이 정리 중")
         default: return L("Unknown", "알 수 없음")
         }
     }
@@ -616,6 +622,7 @@ final class Model: ObservableObject {
             state = s["state"] as? String ?? "unknown"
             detail = s["detail"] as? String ?? ""
             lastError = s["last_error"] as? String
+            otherProcessor = s["other_processor"] as? String
             inboxBlocks = s["inbox_blocks"] as? Int ?? 0
             today = (s["today"] as? [String: Int]) ?? [:]
             vault = s["vault"] as? String ?? vault
@@ -655,6 +662,7 @@ final class Model: ObservableObject {
             reviewThreshold = threshold
             codexPath = cfg["codex_path"] as? String ?? ""
             openWith = cfg["open_with"] as? String ?? ""
+            collectOnly = cfg["collect_only"] as? Bool ?? false
             if let a = cfg["assistant_dir"] as? String {
                 assistantDir = (vault as NSString).appendingPathComponent(a)
             }
@@ -739,6 +747,19 @@ final class Model: ObservableObject {
 
     func kick() {
         Core.shared.tick()
+    }
+
+    /// Take the vault over from the other Mac: core claims it on its next run.
+    func sortHere() {
+        setConfig("collect_only", false)
+        FileManager.default.createFile(atPath: supportDir.appendingPathComponent("claim-vault").path, contents: Data())
+        kick()
+        show(L("This Mac sorts the vault from now on", "이제 이 Mac이 정리해요"))
+    }
+
+    func setCollectOnly(_ on: Bool) {
+        setConfig("collect_only", on)
+        kick()
     }
 
     /// Vault and inbox are both chosen before anything is used.
@@ -2640,6 +2661,16 @@ struct SettingsView: View {
                     Toggle("", isOn: Binding(get: { model.dryRun }, set: { _ in model.toggleDryRun() }))
                         .toggleStyle(.switch).labelsHidden()
                 }
+                Divider()
+                HStack {
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(L("Collect notes only on this Mac", "이 Mac은 메모만 받기"))
+                        Text(L("For a vault synced across Macs: this Mac adds quick notes to the inbox and another Mac sorts them", "여러 Mac이 같은 vault를 동기화할 때: 이 Mac은 빠른 메모만 inbox에 넣고, 정리는 다른 Mac이 해요")).font(.caption).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Toggle("", isOn: Binding(get: { model.collectOnly }, set: { model.setCollectOnly($0) }))
+                        .toggleStyle(.switch).labelsHidden()
+                }
             }
             group(L("Locations", "위치")) {
                 LocationRow(symbol: "externaldrive", label: "vault",
@@ -2836,6 +2867,26 @@ struct Panel: View {
                 }
                 .padding(10)
                 .background(Color.orange.opacity(0.1), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            } else if model.state == "blocked" && !model.collectOnly {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(alignment: .top, spacing: 10) {
+                        Image(systemName: "macbook.and.iphone").font(.title3).foregroundStyle(.orange)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(L("\(model.otherProcessor ?? "Another Mac") sorts this vault", "\(model.otherProcessor ?? "다른 Mac")이(가) 이 vault를 정리하고 있어요"))
+                                .font(.callout.weight(.semibold))
+                            Text(L("Two Macs sorting the same synced inbox would file notes twice, so this Mac waits. Quick notes still go into the inbox.",
+                                   "두 Mac이 동기화된 같은 inbox를 정리하면 두 번 정리돼서, 이 Mac은 기다려요. 빠른 메모는 그대로 inbox에 들어가요."))
+                                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                    HStack {
+                        Spacer()
+                        Button(L("Sort on This Mac", "이 Mac에서 정리"), action: model.sortHere)
+                        Button(L("Collect Notes Only", "메모만 받기")) { model.setCollectOnly(true) }.buttonStyle(.borderedProminent)
+                    }
+                }
+                .padding(10)
+                .background(Color.orange.opacity(0.1), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
             } else if let err = model.lastError, model.state == "error" {
                 Text(err).font(.caption).foregroundStyle(.red).lineLimit(4).textSelection(.enabled)
                     .padding(8).frame(maxWidth: .infinity, alignment: .leading)
@@ -2934,6 +2985,7 @@ struct Panel: View {
             }
             .buttonStyle(.borderedProminent)
             .help(L("Skip the wait and the last-block hold, and process right away", "5분 대기와 마지막 블록 보류를 건너뛰고 바로 처리"))
+            .disabled(model.collectOnly || model.state == "blocked")
             Button { model.togglePause() } label: {
                 Label(model.paused ? L("Resume", "재개") : L("Pause", "일시정지"), systemImage: model.paused ? "play.fill" : "pause.fill")
                     .frame(maxWidth: .infinity)

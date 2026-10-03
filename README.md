@@ -61,7 +61,9 @@ Once installed, Sift uses:
 3. Processed blocks move to `99-assistant/inbox-archive/`, and each result ends with a link to its original.
 4. If you don't like the results, add rules and examples to `99-assistant/rules/*.md`. They apply from the next run.
 5. Items the AI wasn't sure about are gathered in `99-assistant/assistant.base` (a needs-review view) and under the `#assistant/review` tag.
-6. If something was filed wrong, hover over it under **Recent** in the menu bar and click ↺ (or right-click > **Re-sort…**), then say how to change it.
+6. A note that clearly names a project with no folder yet (e.g. "Tramio launch prep") goes into a new `01-projects/<name>/` folder, and the note is marked for review so you can check it.
+   If a folder with the same or a similar name already exists (`margin` vs `Margin`, `agent-notes` vs `agent-note`), that folder is used instead.
+7. If something was filed wrong, hover over it under **Recent** in the menu bar and click ↺ (or right-click > **Re-sort…**), then say how to change it.
    Sift re-sorts the original as instructed and records the correction in `99-assistant/rules/corrections.md`, so later runs follow it.
    The earlier entry is not deleted; remove it yourself if needed.
 
@@ -80,6 +82,12 @@ Open the quick note from anywhere with ⌥Space, write as many lines as you like
 - With the **Meeting** toggle on, the window stays open and only saves a draft. ⌘⏎ (end meeting) adds it as one memo under a `## Meeting notes (start–end)` header.
   While a meeting is on, the window reopens where you last moved or resized it (pulled back on screen if that spot is off screen or on a disconnected display); the next meeting starts in the usual place.
 - The menu bar app drops the memo into `~/Library/Application Support/Sift/quick/`, and the core appends it to the inbox.
+
+### Several Macs, one vault
+If the vault syncs between Macs (iCloud, Obsidian Sync, LiveSync, ...), only one Mac should sort it, or notes get filed twice.
+The Mac that sorts leaves `99-assistant/sift-processor.json` in the vault. Another Mac that sees it (updated within the last 24 hours) stops sorting and asks you to choose:
+- **Collect Notes Only**: this Mac keeps adding quick notes to the inbox and leaves the sorting to the other Mac (also under **Sorting** in settings).
+- **Sort on This Mac**: this Mac takes over; the other Mac then stands down the same way.
 
 Change the check interval, the wait after writing, the last-block hold, the needs-review threshold, and the vault, inbox, and codex locations in the menu bar's **Settings…** window.
 Clicking a recent item, a bubble, or a shortcut opens the note in macOS's default app; under **Opening** you can pick another app such as [Margin](https://github.com/kpiljoong/margin).

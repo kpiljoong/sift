@@ -13,7 +13,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from . import vault
+from . import processor, vault
 from .config import Config, ConfigError, config_path, load_config, support_dir
 from .i18n import set_language, tr
 from .inbox import Block, content_hash, remove_blocks, split_blocks
@@ -188,10 +188,12 @@ class Run:
     def low(self, item: Dict[str, Any]) -> bool:
         return item.get("confidence", 0.0) < self.cfg.review_threshold
 
-    def frontmatter(self, item: Dict[str, Any]) -> str:
+    def frontmatter(self, item: Dict[str, Any], review: bool = False) -> str:
         props = item.get("properties") or {}
         types = [t for t in (props.get("type") or []) if t] or [item.get("kind", "note")]
         tags = [_tag(t) for t in (props.get("tags") or []) if _tag(t)]
+        if review and REVIEW_TAG not in tags:
+            tags.append(REVIEW_TAG)
         out = ["---", "type:"] + [f"  - {_yaml(t)}" for t in types]
         if props.get("project"):
             out.append(f"project: {_yaml(props['project'])}")
@@ -237,13 +239,17 @@ class Run:
                 content = _strip_frontmatter(content)
                 if not content:
                     return tr("(skipped: empty content)", "(빈 내용이라 건너뜀)")
-                target = vault.resolve_note(self.cfg, path_rel or "")
+                path_rel = vault.reuse_similar_folder(self.cfg, path_rel or "")  # agent-note/ → existing agent-notes/
+                target = vault.resolve_note(self.cfg, path_rel)
                 if kind == "append" and not target.exists():
                     kind = "create"
                 if kind == "create" and target.exists():
                     kind = "append"  # never overwrite
+                new_folder = vault.new_project_folder(self.cfg, target)
+                if new_folder:  # a new project folder: allowed, but always shown for review
+                    footer += "" if mark else f" #{REVIEW_TAG}"
                 if kind == "create":
-                    body = f"{self.frontmatter(item)}\n\n{content}\n\n{footer}"
+                    body = f"{self.frontmatter(item, review=bool(new_folder))}\n\n{content}\n\n{footer}"
                 else:
                     body = f"{content}\n\n{footer}"
                 if not dry:
@@ -254,6 +260,8 @@ class Run:
                     bump(self.state, "docs")
                 targets.append(self.rel(target))
                 verb = tr("new note", "새 문서") if kind == "create" else tr("appended to existing note", "기존 문서에 추가")
+                if new_folder:
+                    verb += tr(f" in new folder `{new_folder}/`", f" (새 폴더 `{new_folder}/`)")
                 return f"{verb} → `{self.rel(target)}` ({action.get('reason', '')})\n" + _indent(content)
 
             if kind == "calendar":
@@ -492,7 +500,7 @@ def check_due(cfg: Config, at: Optional[float] = None) -> bool:
     """
     at = time.time() if at is None else at
     marker = support_dir() / "last-check"
-    if run_now_flag().exists() or not marker.exists() or any(quick_dir().glob("*.*")):
+    if run_now_flag().exists() or processor.claim_request().exists() or not marker.exists() or any(quick_dir().glob("*.*")):
         return True
     last = marker.stat().st_mtime
     if config_path().exists() and config_path().stat().st_mtime > last:
@@ -530,6 +538,26 @@ def run_once(force: bool = False, engine=None, cfg: Optional[Config] = None) -> 
         if cfg.paused and not force:
             write_status(state="paused", detail=tr("Paused", "일시정지됨"), **base)
             return {"message": "paused"}
+        if cfg.collect_only:  # even "process now": sorting belongs to the other Mac
+            write_status(state="collecting", detail=tr("Only collecting notes; another Mac sorts them",
+                                                       "메모만 받는 중 · 정리는 다른 Mac에서"),
+                         last_run_at=iso(now()), last_error=None, other_processor=None,
+                         inbox_blocks=remaining_blocks(cfg, 0), **base)
+            return {"message": "collect_only"}
+        request = processor.claim_request()
+        if request.exists():
+            request.unlink()
+            processor.claim(cfg, force=True)
+        owner = processor.other(cfg)
+        if owner:
+            hours = processor.age_hours(owner)
+            ago = tr(f"{int(hours * 60)} min", f"{int(hours * 60)}분") if hours < 1 else tr(f"{int(hours)} h", f"{int(hours)}시간")
+            write_status(state="blocked", other_processor=owner.get("name") or "?",
+                         detail=tr(f"{owner.get('name')} sorted this vault {ago} ago, so this Mac doesn't (no double sorting)",
+                                   f"{owner.get('name')}이(가) {ago} 전에 이 vault를 정리해서, 이 Mac은 정리하지 않아요 (중복 방지)"),
+                         last_run_at=iso(now()), last_error=None, inbox_blocks=remaining_blocks(cfg, 0), **base)
+            return {"message": "blocked"}
+        processor.claim(cfg)
         run = Run(cfg, engine=engine, force=force)
         if quick:
             run.log(tr(f"Added {quick} quick note(s) to the inbox", f"빠른 메모 {quick}개를 inbox에 추가"))
@@ -547,6 +575,7 @@ def run_once(force: bool = False, engine=None, cfg: Optional[Config] = None) -> 
             inbox_blocks=remaining_blocks(cfg, result["blocks"]),
             today=state["stats"].get(run.t.strftime("%Y-%m-%d"), {}),
             recent=list(reversed(state["history"][-10:])),
+            other_processor=None,
             **base,
         )
         return result

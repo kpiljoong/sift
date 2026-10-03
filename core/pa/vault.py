@@ -6,8 +6,9 @@ guarded by a content-hash check.
 """
 
 import os
+import re
 from pathlib import Path, PurePosixPath
-from typing import List
+from typing import List, Optional
 
 from .config import Config
 from .i18n import set_language, tr
@@ -60,6 +61,43 @@ def resolve_note(cfg: Config, rel: str) -> Path:
     if cfg.vault_path.resolve() not in full.resolve().parents:  # also catches symlinks
         raise UnsafePath(f"escapes the vault: {rel!r}")
     return full
+
+
+def _folder_key(name: str) -> str:
+    return re.sub(r"[\s_.-]+", "", name.lower()).rstrip("s")
+
+
+def reuse_similar_folder(cfg: Config, rel: str) -> str:
+    """A note planned in a folder that doesn't exist yet goes into an existing sibling folder
+    with nearly the same name instead (agent-note → agent-notes, Tramio → tramio)."""
+    parts = PurePosixPath(rel).parts
+    base = cfg.vault_path
+    for i, part in enumerate(parts[:-1]):
+        if (base / part).is_dir():
+            base = base / part
+            continue
+        if base.is_dir():
+            for existing in sorted(base.iterdir()):
+                if existing.is_dir() and not existing.name.startswith(".") and _folder_key(existing.name) == _folder_key(part):
+                    return str(PurePosixPath(*parts[:i], existing.name, *parts[i + 1:]))
+        break
+    return rel
+
+
+def new_project_folder(cfg: Config, path: Path) -> Optional[str]:
+    """The new top-level or second-level folder (a new project, area or topic, like
+    `01-projects/tramio`) that writing `path` would create, vault-relative. Subfolders of
+    existing ones (`01-projects/alpha/meetings`) don't count."""
+    missing = None
+    for parent in path.parents:
+        if parent == cfg.vault_path or cfg.vault_path not in parent.parents:
+            break
+        if not parent.exists():
+            missing = parent
+    if missing is None:
+        return None
+    rel = missing.relative_to(cfg.vault_path)
+    return rel.as_posix() if len(rel.parts) <= 2 else None
 
 
 def append(path: Path, text: str) -> None:
