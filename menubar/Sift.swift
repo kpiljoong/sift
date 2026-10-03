@@ -1949,17 +1949,68 @@ final class KeyPanel: NSPanel {
     override var canBecomeKey: Bool { true }
 }
 
+/// One quick-note tab: its own text, request, @ targets, meeting and caret, sent on its own.
+struct NoteDraft: Equatable {
+    var text = ""
+    var request = ""
+    var meetingStart: Date?
+    var mentions: [String: String] = [:]
+    var cursor: NSRange?
+
+    var isEmpty: Bool { text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && request.isEmpty && meetingStart == nil }
+
+    /// Tab label: the first @ target in the text, else the first line.
+    var title: String {
+        if let token = mentions.keys.filter({ text.contains($0) }).min(by: {
+            (text.range(of: $0)?.lowerBound ?? text.endIndex) < (text.range(of: $1)?.lowerBound ?? text.endIndex)
+        }) { return token }
+        let line = text.split(whereSeparator: \.isNewline).first.map { $0.trimmingCharacters(in: .whitespaces) } ?? ""
+        return line.isEmpty ? L("New note", "새 메모") : line
+    }
+
+    init(text: String = "", request: String = "", meetingStart: Date? = nil, mentions: [String: String] = [:], cursor: NSRange? = nil) {
+        self.text = text
+        self.request = request
+        self.meetingStart = meetingStart
+        self.mentions = mentions
+        self.cursor = cursor
+    }
+
+    init(_ d: [String: Any]) {
+        text = d["text"] as? String ?? ""
+        request = d["request"] as? String ?? ""
+        meetingStart = (d["meeting_start"] as? Double).map { Date(timeIntervalSince1970: $0) }
+        mentions = d["mentions"] as? [String: String] ?? [:]
+        if let c = d["cursor"] as? [Int], c.count == 2 { cursor = NSRange(location: c[0], length: c[1]) }
+    }
+
+    var json: [String: Any] {
+        var d: [String: Any] = ["text": text, "request": request, "mentions": mentions]
+        if let cursor { d["cursor"] = [cursor.location, cursor.length] }
+        if let meetingStart { d["meeting_start"] = meetingStart.timeIntervalSince1970 }
+        return d
+    }
+}
+
 final class QuickNoteState: ObservableObject {
+    static let maxTabs = 5
+    /// Every tab; the current one is mirrored in the fields below while it's shown.
+    @Published private(set) var tabs: [NoteDraft] = [NoteDraft()]
+    @Published private(set) var active = 0
+    @Published var confirmClose: Int?  // tab waiting for "discard?" in the panel
+    private var switching = false
+
     @Published var text: String { didSet { saveDraft() } }
     @Published var request: String { didSet { saveDraft() } }
     /// Meeting mode: the panel stays open and the note goes in as one meeting note when finished.
     @Published var meetingStart: Date? {
         didSet {
-            if meetingStart == nil { meetingFrame = nil }  // a new meeting opens in the usual place
+            guard !switching else { return }
+            if !anyMeeting { meetingFrame = nil }  // a new meeting opens in the usual place
             saveDraft()
         }
     }
-    /// Where the pinned meeting panel was last moved or resized; it reopens there until the meeting ends.
+    /// Where the pinned meeting panel was last moved or resized; it reopens there while any tab is in a meeting.
     var meetingFrame: NSRect? { didSet { saveDraft() } }
     /// "@alpha/" → "@[[01-projects/alpha/]]": short in the editor, exact paths when handed to core.
     var mentions: [String: String] { didSet { saveDraft() } }
@@ -2011,29 +2062,45 @@ final class QuickNoteState: ObservableObject {
     weak var editor: NSTextView?
     private var dismissedAt: Int?  // esc closed the list for the @ at this location
 
+    /// This tab is a meeting (header, ⌘⏎ wording).
     var meeting: Bool { meetingStart != nil }
+    /// Some tab is a meeting: the panel stays pinned and remembers where it was put.
+    var anyMeeting: Bool { meeting || tabs.indices.contains { $0 != active && tabs[$0].meetingStart != nil } }
+
+    var current: NoteDraft {
+        NoteDraft(text: text, request: request, meetingStart: meetingStart, mentions: mentions, cursor: cursor)
+    }
 
     init() {
         let saved = (try? Data(contentsOf: draftURL))
             .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] } ?? [:]
-        text = saved["text"] as? String ?? ""
-        request = saved["request"] as? String ?? ""
-        meetingStart = (saved["meeting_start"] as? Double).map { Date(timeIntervalSince1970: $0) }
-        mentions = saved["mentions"] as? [String: String] ?? [:]
-        if let c = saved["cursor"] as? [Int], c.count == 2 { cursor = NSRange(location: c[0], length: c[1]) }
-        if meetingStart != nil, let f = saved["meeting_frame"] as? [Double], f.count == 4 {
+        // drafts from before tabs are the top-level fields: one tab
+        let loaded = ((saved["tabs"] as? [[String: Any]]) ?? [saved]).prefix(QuickNoteState.maxTabs).map(NoteDraft.init)
+        let all = loaded.isEmpty ? [NoteDraft()] : Array(loaded)
+        let index = min(max(saved["active"] as? Int ?? 0, 0), all.count - 1)
+        let d = all[index]
+        tabs = all
+        active = index
+        text = d.text
+        request = d.request
+        meetingStart = d.meetingStart
+        mentions = d.mentions
+        cursor = d.cursor
+        if all.contains(where: { $0.meetingStart != nil }), let f = saved["meeting_frame"] as? [Double], f.count == 4 {
             meetingFrame = NSRect(x: f[0], y: f[1], width: f[2], height: f[3])
         }
     }
 
     func saveDraft() {
-        if text.isEmpty && request.isEmpty && !meeting {
+        guard !switching else { return }
+        tabs[active] = current
+        if tabs.count == 1 && text.isEmpty && request.isEmpty && !meeting {
             try? FileManager.default.removeItem(at: draftURL)
             return
         }
-        var draft: [String: Any] = ["text": text, "request": request, "mentions": mentions]
-        if let cursor { draft["cursor"] = [cursor.location, cursor.length] }
-        if let meetingStart { draft["meeting_start"] = meetingStart.timeIntervalSince1970 }
+        var draft = current.json  // top level: the current tab, readable by versions before tabs
+        draft["tabs"] = tabs.map(\.json)
+        draft["active"] = active
         if let f = meetingFrame { draft["meeting_frame"] = [f.minX, f.minY, f.width, f.height].map(Double.init) }
         if let data = try? JSONSerialization.data(withJSONObject: draft) {
             try? data.write(to: draftURL, options: .atomic)
@@ -2042,6 +2109,67 @@ final class QuickNoteState: ObservableObject {
 
     func toggleMeeting() {
         meetingStart = meeting ? nil : Date()
+    }
+
+    // MARK: tabs
+
+    /// Show tab `index`. A blank tab left behind closes by itself.
+    func select(_ index: Int) {
+        guard tabs.indices.contains(index), index != active else { return }
+        completion = nil
+        tabs[active] = current
+        var target = index
+        if tabs.count > 1 && tabs[active].isEmpty {
+            tabs.remove(at: active)
+            if target > active { target -= 1 }
+        }
+        load(target)
+    }
+
+    func newTab() {
+        guard tabs.count < QuickNoteState.maxTabs else { return }
+        if isBlank { return }  // this one is already blank
+        completion = nil
+        tabs[active] = current
+        tabs.append(NoteDraft())
+        load(tabs.count - 1)
+    }
+
+    var isBlank: Bool { current.isEmpty }
+
+    /// Drop tab `index` (its text is gone; callers confirm first when it has any).
+    func closeTab(_ index: Int) {
+        guard tabs.indices.contains(index) else { return }
+        completion = nil
+        tabs[active] = current
+        tabs.remove(at: index)
+        if tabs.isEmpty { tabs = [NoteDraft()] }
+        load(index < active ? active - 1 : min(active, tabs.count - 1))
+    }
+
+    /// After ⌘⏎: the sent tab goes away (or is cleared when it's the only one).
+    func finishCurrent() {
+        if tabs.count > 1 {
+            closeTab(active)
+        } else {
+            tabs = [NoteDraft()]
+            load(0)
+        }
+    }
+
+    private func load(_ index: Int) {
+        confirmClose = nil
+        switching = true
+        active = index
+        let d = tabs[index]
+        text = d.text
+        request = d.request
+        meetingStart = d.meetingStart
+        mentions = d.mentions
+        cursor = d.cursor
+        switching = false
+        if !anyMeeting { meetingFrame = nil }
+        saveDraft()
     }
 
     // MARK: @ completion
@@ -2171,7 +2299,8 @@ final class QuickNote: NSObject, NSWindowDelegate {
         self.panel = panel
         // fresh view each time so the editor gets focus again
         panel.contentView = NSHostingView(rootView: QuickNoteView(state: state, submit: { [weak self] in self?.submit() },
-                                                                  cancel: { [weak self] in self?.close() }))
+                                                                  cancel: { [weak self] in self?.close() },
+                                                                  closeTab: { [weak self] in self?.closeTab($0) }))
         let vault = model.vault
         DispatchQueue.global().async { [weak self] in
             let targets = MentionIndex.load(vault: vault)
@@ -2184,7 +2313,7 @@ final class QuickNote: NSObject, NSWindowDelegate {
         let screen = NSScreen.screens.first { $0.frame.contains(mouse) } ?? NSScreen.main
         if panel.isVisible {
             // already open (a pinned meeting): leave it where the user put it
-        } else if state.meeting, let saved = state.meetingFrame {
+        } else if state.anyMeeting, let saved = state.meetingFrame {
             panel.setFrame(QuickNote.onScreen(saved, min: panel.minSize, fallback: screen), display: false)
         } else if let visible = screen?.visibleFrame {
             let size = panel.frame.size
@@ -2256,8 +2385,20 @@ final class QuickNote: NSObject, NSWindowDelegate {
         zoomKeys = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self, event.window === self.panel else { return event }
             let mods = event.modifierFlags.intersection([.command, .option, .control, .shift])
+            if Int(event.keyCode) == kVK_Tab && (mods == .control || mods == [.control, .shift]) {  // ⌃⇥ next tab, ⌃⇧⇥ previous
+                let n = self.state.tabs.count
+                self.state.select((self.state.active + (mods.contains(.shift) ? n - 1 : 1)) % n)
+                return nil
+            }
             guard mods == .command || mods == [.command, .shift] else { return event }
+            let digits = [kVK_ANSI_1, kVK_ANSI_2, kVK_ANSI_3, kVK_ANSI_4, kVK_ANSI_5]
+            if mods == .command, let n = digits.firstIndex(of: Int(event.keyCode)) {
+                self.state.select(n)
+                return nil
+            }
             switch Int(event.keyCode) {
+            case kVK_ANSI_T where mods == .command: self.state.newTab()
+            case kVK_ANSI_W where mods == .command: self.closeTab(self.state.active)
             case kVK_ANSI_Equal, kVK_ANSI_KeypadPlus: self.state.zoom(1)
             case kVK_ANSI_Minus, kVK_ANSI_KeypadMinus: self.state.zoom(-1)
             case kVK_ANSI_0, kVK_ANSI_Keypad0: self.state.zoom(0)
@@ -2277,6 +2418,10 @@ final class QuickNote: NSObject, NSWindowDelegate {
             return nil
         }
         keys = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            if let self, self.state.confirmClose != nil, event.window === self.panel, Int(event.keyCode) == kVK_Escape {
+                self.state.confirmClose = nil  // esc keeps the tab
+                return nil
+            }
             guard let self, self.state.completion != nil, event.window === self.panel else { return event }
             let mods = event.modifierFlags.intersection([.command, .option, .control, .shift])
             guard mods.isEmpty else { return event }
@@ -2312,12 +2457,8 @@ final class QuickNote: NSObject, NSWindowDelegate {
         text = state.expandedText(text)
         if meeting { text = state.meetingHeader() + "\n" + text }
         if model.submitQuickNote(text, request: request, group: meeting || !request.isEmpty) {
-            state.text = ""
-            state.request = ""
-            state.meetingStart = nil
-            state.mentions = [:]
-            state.cursor = nil
-            close()
+            state.finishCurrent()
+            if !state.anyMeeting { close() }  // a meeting in another tab keeps the panel up
             model.notifyQueued(typed)
         }
     }
@@ -2350,12 +2491,25 @@ final class QuickNote: NSObject, NSWindowDelegate {
     func windowDidEndLiveResize(_ notification: Notification) { rememberMeetingFrame() }
 
     private func rememberMeetingFrame() {
-        guard state.meeting, let panel, panel.isVisible else { return }
+        guard state.anyMeeting, let panel, panel.isVisible else { return }
         state.meetingFrame = panel.frame
     }
 
     func windowDidResignKey(_ notification: Notification) {
-        if !state.meeting { close() }  // clicking elsewhere closes it (the draft stays); meetings stay pinned
+        // clicking elsewhere closes it (the draft stays); meetings stay pinned
+        if !state.anyMeeting { close() }
+    }
+
+    /// Closing a tab with writing in it asks first, inside the panel (a sheet would take the keyboard
+    /// away from this non-activating panel); a blank one just goes. ⌘W again confirms, esc keeps it.
+    func closeTab(_ index: Int) {
+        guard state.tabs.indices.contains(index) else { return }
+        let draft = index == state.active ? state.current : state.tabs[index]
+        if draft.isEmpty || state.confirmClose == index {
+            state.confirmClose = nil
+            return state.closeTab(index)
+        }
+        state.confirmClose = index
     }
 }
 
@@ -2370,6 +2524,7 @@ struct QuickNoteView: View {
     @ObservedObject var state: QuickNoteState
     let submit: () -> Void
     let cancel: () -> Void
+    let closeTab: (Int) -> Void
 
     var body: some View {
         let empty = state.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -2403,6 +2558,10 @@ struct QuickNoteView: View {
                 .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
                 .foregroundStyle(.secondary)
                 .help(L("Window opacity (⌘[ ⌘])", "창 투명도 (⌘[ ⌘])"))
+                Button(action: state.newTab) { Image(systemName: "plus.square.on.square").font(.system(size: 12)) }
+                    .buttonStyle(.plain).foregroundStyle(.secondary)
+                    .disabled(state.tabs.count >= QuickNoteState.maxTabs || state.isBlank)
+                    .help(L("New tab (⌘T): another note, sent on its own", "새 탭 (⌘T): 따로 쓰고 따로 넣는 메모"))
                 Button(action: state.toggleMeeting) {
                     Label(state.meeting ? L("In meeting", "미팅 중") : L("Meeting", "미팅"), systemImage: state.meeting ? "pin.fill" : "pin")
                         .font(.caption.weight(.medium))
@@ -2416,8 +2575,22 @@ struct QuickNoteView: View {
                       : L("Meeting mode: the window stays open, and the note goes in as one meeting note when you finish",
                           "미팅 모드: 창이 계속 떠 있고, 끝낼 때 '미팅 메모' 하나로 넣어요"))
             }
+            if state.tabs.count > 1 { tabBar }
+            if let index = state.confirmClose, state.tabs.indices.contains(index) {
+                let draft = index == state.active ? state.current : state.tabs[index]
+                HStack(spacing: 8) {
+                    Image(systemName: "trash").foregroundStyle(.red)
+                    Text(L("Discard “\(draft.title)”? It won't go to the inbox.", "「\(draft.title)」 탭을 버릴까요? inbox에 넣지 않고 사라져요."))
+                        .font(.callout).lineLimit(1).truncationMode(.middle)
+                    Spacer()
+                    Button(L("Keep", "취소")) { state.confirmClose = nil }.controlSize(.small)
+                    Button(L("Discard (⌘W)", "버리기 (⌘W)")) { closeTab(index) }.controlSize(.small).tint(.red)
+                }
+                .padding(.horizontal, 9).padding(.vertical, 5)
+                .background(Color.red.opacity(0.1), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+            }
             ZStack(alignment: .topLeading) {
-                NoteEditor(state: state)
+                NoteEditor(state: state).id(state.active)  // a fresh editor per tab: its own caret and undo
                 if state.text.isEmpty {
                     Text(state.meeting ? L("Write the meeting down. When it's over, ⌘⏎ adds it all at once.", "미팅 내용을 적으세요. 끝나면 ⌘⏎로 한 번에 넣어요.")
                          : L("Write whatever comes to mind. @ picks a note or folder to file it in; blank lines split it into separate items.",
@@ -2467,6 +2640,46 @@ struct QuickNoteView: View {
         }
         .padding(.horizontal, 14).padding(.top, 12).padding(.bottom, 12)
         .frame(minWidth: QuickNoteView.width, maxWidth: .infinity, minHeight: QuickNoteView.height, maxHeight: .infinity)
+    }
+
+    var tabBar: some View {
+        HStack(spacing: 4) {
+            ForEach(Array(state.tabs.enumerated()), id: \.offset) { index, tab in
+                let draft = index == state.active ? state.current : tab
+                NoteTab(title: draft.title, meeting: draft.meetingStart != nil, selected: index == state.active,
+                        shortcut: "⌘\(index + 1)", select: { state.select(index) }, close: { closeTab(index) })
+            }
+            Spacer(minLength: 0)
+        }
+    }
+}
+
+struct NoteTab: View {
+    let title: String
+    let meeting: Bool
+    let selected: Bool
+    let shortcut: String
+    let select: () -> Void
+    let close: () -> Void
+    @State private var hover = false
+
+    var body: some View {
+        HStack(spacing: 4) {
+            if meeting { Image(systemName: "pin.fill").font(.system(size: 9)).foregroundStyle(.teal) }
+            Text(title).font(.system(size: 12, weight: selected ? .semibold : .regular)).lineLimit(1).truncationMode(.tail)
+            Button(action: close) { Image(systemName: "xmark").font(.system(size: 8, weight: .bold)) }
+                .buttonStyle(.plain).foregroundStyle(.secondary)
+                .opacity(hover || selected ? 1 : 0)
+                .help(L("Close tab (⌘W)", "탭 닫기 (⌘W)"))
+        }
+        .padding(.horizontal, 8).padding(.vertical, 4)
+        .frame(maxWidth: 140)
+        .background(selected ? Color.accentColor.opacity(0.16) : Color.primary.opacity(hover ? 0.08 : 0.04),
+                    in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+        .contentShape(Rectangle())
+        .onTapGesture(perform: select)
+        .onHover { hover = $0 }
+        .help("\(title) (\(shortcut))")
     }
 }
 

@@ -77,11 +77,14 @@ Open the quick note from anywhere with ⌥Space, write as many lines as you like
   and goes into the inbox as an exact path, like `@[[01-projects/alpha/]]`. Point at a note and the memo goes into that note; point at a folder and it's filed inside that folder.
   You can also write `@file-name` (or `@folder-name/` for a folder) directly in the inbox. The list comes from the core's index, so `.assistantignore` paths never appear.
 - Esc or clicking elsewhere closes it; what you were writing stays as a draft, and reopening puts the caret back where you left off.
+  Drafts are saved as you type, so quitting, restarting, or updating Sift doesn't lose them.
+- **Tabs** for things going on at the same time: ⌘T (or the ⧉ button) opens another note, up to 5. Each tab keeps its own text, `@` targets, request, meeting, and caret,
+  and ⌘⏎ adds only the current tab. Switch with ⌘1–⌘5 or ⌃⇥; ⌘W closes a tab (one with text asks first; ⌘W again discards it). A blank tab closes when you leave it, and the tab bar hides when only one is left.
 - Text size: the −/+ buttons at the bottom, ⌘+ / ⌘- / ⌘0, or a trackpad pinch. Window opacity (40–100%): the ◐ menu at the top, or ⌘[ / ⌘]. Both are remembered.
 - Anything you write in the **Ask the AI** field becomes a `Request: …` line (`요청: …` in Korean) in front of the memo, and the whole memo is sorted as one, following that instruction
   (e.g. "turn this into meeting notes", "add to the alpha note"). Writing a `Request:` or `요청:` line directly in the inbox works the same way.
 - With the **Meeting** toggle on, the window stays open and only saves a draft. ⌘⏎ (end meeting) adds it as one memo under a `## Meeting notes (start–end)` header.
-  While a meeting is on, the window reopens where you last moved or resized it (pulled back on screen if that spot is off screen or on a disconnected display); the next meeting starts in the usual place.
+  While a meeting is on (in any tab), the window stays up even when you switch tabs, and it reopens where you last moved or resized it (pulled back on screen if that spot is off screen or on a disconnected display); the next meeting starts in the usual place.
 - The menu bar app drops the memo into `~/Library/Application Support/Sift/quick/`, and the core appends it to the inbox.
 
 ### Several Macs, one vault
